@@ -1,0 +1,28 @@
+{
+  "name": "boardpack-backend",
+  "version": "1.0.0",
+  "description": "BoardPack Board Pack Review System – API Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "governance",
+    "board",
+    "ai"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "form-data": "^4.0.5",
+    "mammoth": "^1.11.0",
+    "multer": "^2.0.2",
+    "openai": "^6.27.0",
+    "pdf-parse": "^2.4.5",
+    "uuid": "^11.1.0"
+  }
+}

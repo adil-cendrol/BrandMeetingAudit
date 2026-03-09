@@ -1,0 +1,7 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+python-multipart==0.0.20
+openai==1.99.6
+python-dotenv==1.1.1
+pypdf==5.9.0
+unstructured[pdf,docx]==0.18.15

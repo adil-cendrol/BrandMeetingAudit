@@ -3,18 +3,18 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { assessmentApi } from '../api/client';
 
 const STAGES = [
-    { key: 'transcriptParsing', label: 'Transcript Parsing', desc: 'OCR, speaker diarization & segmentation', icon: '📄' },
-    { key: 'minutesGeneration', label: 'Meeting Minutes Generation', desc: 'Extracting decisions, actions & agenda items', icon: '📝' },
-    { key: 'keyInsights', label: 'Key Insights Extraction', desc: 'Semantic analysis & evidence mapping', icon: '🔍' },
-    { key: 'engagementAnalysis', label: 'Engagement Analysis', desc: 'Speaker distribution & challenger scoring', icon: '📊' },
-    { key: 'governanceScoring', label: 'Governance Scoring', desc: 'ISO 37000 gap detection & weighted scoring', icon: '⚖️' },
+    { key: 'transcriptParsing', label: 'Transcript Parsing', desc: 'OCR, speaker diarization & segmentation', icon: 'DOC' },
+    { key: 'minutesGeneration', label: 'Meeting Minutes Generation', desc: 'Extracting decisions, actions & agenda items', icon: 'MIN' },
+    { key: 'keyInsights', label: 'Key Insights Extraction', desc: 'Semantic analysis & evidence mapping', icon: 'INS' },
+    { key: 'engagementAnalysis', label: 'Engagement Analysis', desc: 'Speaker distribution & challenger scoring', icon: 'ENG' },
+    { key: 'governanceScoring', label: 'Governance Scoring', desc: 'ISO 37000 gap detection & weighted scoring', icon: 'GOV' },
 ];
 
 function StageRow({ stage, status, index }) {
     return (
         <div className={`pipeline-stage ${status}`}>
             <div className={`stage-number ${status}`}>
-                {status === 'complete' ? '✓' : status === 'processing' ? <span className="spinner" style={{ width: '14px', height: '14px' }} /> : index + 1}
+                {status === 'complete' ? 'OK' : status === 'processing' ? <span className="spinner" style={{ width: '14px', height: '14px' }} /> : index + 1}
             </div>
             <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -44,11 +44,25 @@ export default function Processing() {
         try {
             const data = await assessmentApi.getStatus(id);
             setStatusData(data);
+
             if (data.status === 'completed') {
                 setTimeout(() => navigate(`/results/${id}`), 1500);
             }
+
+            if (data.status === 'failed') {
+                const failureLog = (data.logs || [])
+                    .slice()
+                    .reverse()
+                    .find((log) => (log.message || '').toLowerCase().includes('pipeline failed:'));
+                setError(failureLog?.message || 'Analysis failed. Check backend logs for details.');
+            } else {
+                setError('');
+            }
+
+            return data;
         } catch (e) {
             setError('Failed to fetch analysis status.');
+            return null;
         }
     }, [id, navigate]);
 
@@ -57,7 +71,7 @@ export default function Processing() {
             try {
                 const a = await assessmentApi.getById(id);
                 setAssessment(a);
-                if (!startedRef.current && a.status !== 'completed') {
+                if (!startedRef.current && a.status !== 'completed' && a.status !== 'failed') {
                     startedRef.current = true;
                     await assessmentApi.startAnalysis(id);
                 }
@@ -69,9 +83,21 @@ export default function Processing() {
     }, [id]);
 
     useEffect(() => {
-        fetchStatus();
-        const interval = setInterval(fetchStatus, 1500);
-        return () => clearInterval(interval);
+        let interval = null;
+
+        const poll = async () => {
+            const data = await fetchStatus();
+            if (data?.status === 'completed' || data?.status === 'failed') {
+                if (interval) clearInterval(interval);
+            }
+        };
+
+        poll();
+        interval = setInterval(poll, 1500);
+
+        return () => {
+            if (interval) clearInterval(interval);
+        };
     }, [fetchStatus]);
 
     useEffect(() => {
@@ -81,26 +107,25 @@ export default function Processing() {
     const pipeline = statusData?.pipeline || {};
     const logs = statusData?.logs || [];
 
-    const completedCount = STAGES.filter(s => pipeline[s.key] === 'complete').length;
+    const completedCount = STAGES.filter((s) => pipeline[s.key] === 'complete').length;
     const progress = Math.round((completedCount / STAGES.length) * 100);
 
-    // Estimated time
-    const pendingStages = STAGES.filter(s => pipeline[s.key] === 'pending').length;
-    const processingStage = STAGES.find(s => pipeline[s.key] === 'processing');
+    const pendingStages = STAGES.filter((s) => pipeline[s.key] === 'pending').length;
+    const processingStage = STAGES.find((s) => pipeline[s.key] === 'processing');
     const etaSeconds = pendingStages * 3 + (processingStage ? 2 : 0);
 
     function formatLog(msg) {
-        if (msg.toLowerCase().includes('warning') || msg.toLowerCase().includes('weak')) return 'warning';
-        if (msg.toLowerCase().includes('complete') || msg.toLowerCase().includes('done')) return 'success';
+        const lower = (msg || '').toLowerCase();
+        if (lower.includes('failed') || lower.includes('error') || lower.includes('warning') || lower.includes('weak')) return 'warning';
+        if (lower.includes('complete') || lower.includes('done')) return 'success';
         return 'info';
     }
 
     return (
         <div className="page-container">
-            {/* Header */}
             <div className="page-header">
                 <div className="page-breadcrumb">
-                    <span onClick={() => navigate('/')} style={{ cursor: 'pointer' }}>🏠 Dashboard</span>
+                    <span onClick={() => navigate('/')} style={{ cursor: 'pointer' }}>Dashboard</span>
                     <span style={{ opacity: 0.4 }}>/</span>
                     <span style={{ color: 'var(--accent)' }}>Analysis in Progress</span>
                 </div>
@@ -117,7 +142,6 @@ export default function Processing() {
             )}
 
             <div className="grid-2" style={{ gap: '24px' }}>
-                {/* Pipeline Stages */}
                 <div>
                     <div className="card mb-6">
                         <div className="card-header">
@@ -126,11 +150,13 @@ export default function Processing() {
                                 <div className="card-subtitle">5-stage AI governance analysis</div>
                             </div>
                             {statusData?.status === 'completed' && (
-                                <span className="badge badge-green">✓ Complete</span>
+                                <span className="badge badge-green">Complete</span>
+                            )}
+                            {statusData?.status === 'failed' && (
+                                <span className="badge badge-red">Failed</span>
                             )}
                         </div>
 
-                        {/* Overall progress */}
                         <div style={{ marginBottom: '24px' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
                                 <span className="text-sm text-muted">Overall Progress</span>
@@ -139,14 +165,18 @@ export default function Processing() {
                             <div className="progress-bar" style={{ height: '8px' }}>
                                 <div className="progress-fill progress-fill-blue" style={{ width: `${progress}%` }} />
                             </div>
-                            {statusData?.status !== 'completed' && etaSeconds > 0 && (
+                            {statusData?.status !== 'completed' && statusData?.status !== 'failed' && etaSeconds > 0 && (
                                 <div className="text-sm text-muted" style={{ marginTop: '6px' }}>
-                                    ⏱️ Estimated {etaSeconds}s remaining
+                                    Estimated {etaSeconds}s remaining
+                                </div>
+                            )}
+                            {statusData?.status === 'failed' && (
+                                <div className="text-sm text-red" style={{ marginTop: '6px', fontWeight: 600 }}>
+                                    Analysis stopped due to backend error.
                                 </div>
                             )}
                         </div>
 
-                        {/* Stages */}
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                             {STAGES.map((stage, i) => (
                                 <StageRow
@@ -160,18 +190,12 @@ export default function Processing() {
                     </div>
                 </div>
 
-                {/* Log Panel & Info */}
                 <div>
                     <div className="card mb-6">
                         <div className="card-header">
                             <div>
                                 <div className="card-title">System Log</div>
                                 <div className="card-subtitle">Real-time analysis events</div>
-                            </div>
-                            <div style={{ display: 'flex', gap: '4px' }}>
-                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--red-400)' }} />
-                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--amber-400)' }} />
-                                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--emerald-400)' }} />
                             </div>
                         </div>
                         <div className="log-panel" ref={logRef}>
@@ -188,16 +212,21 @@ export default function Processing() {
                             {statusData?.status === 'completed' && (
                                 <div className="log-entry">
                                     <span className="log-time">done</span>
-                                    <span className="log-msg success">✓ Governance analysis complete — redirecting to results...</span>
+                                    <span className="log-msg success">Governance analysis complete, redirecting to results...</span>
+                                </div>
+                            )}
+                            {statusData?.status === 'failed' && (
+                                <div className="log-entry">
+                                    <span className="log-time">fail</span>
+                                    <span className="log-msg warning">Pipeline failed. Review the error shown above.</span>
                                 </div>
                             )}
                         </div>
                     </div>
 
-                    {/* Meeting info card */}
                     {assessment && (
                         <div className="card">
-                            <div className="card-title mb-4">📋 Meeting Details</div>
+                            <div className="card-title mb-4">Meeting Details</div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                                 {[
                                     ['Meeting Name', assessment.meetingName],

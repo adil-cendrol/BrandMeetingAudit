@@ -36,6 +36,16 @@ def _extract_pdf_fast_no_ocr(file_path: str) -> str:
     return text
 
 
+def _ensure_pdf_text_quality(text: str, filename: str) -> str:
+    min_chars = int(os.getenv("PDF_MIN_TEXT_CHARS", "300"))
+    if len((text or "").strip()) < min_chars:
+        raise ValueError(
+            f'PDF text extraction low quality for {filename}. '
+            "Please upload a searchable PDF (not scanned image PDF)."
+        )
+    return text
+
+
 async def _transcribe_audio(file_path: str) -> str:
     client = _openai_client()
     if not client:
@@ -62,12 +72,13 @@ async def extract_text_from_file(file_path: str, filename: str) -> str:
         try:
             fast_text = await asyncio.to_thread(_extract_pdf_fast_no_ocr, file_path)
             if fast_text:
-                return fast_text
+                return _ensure_pdf_text_quality(fast_text, filename)
         except Exception:
             pass
 
         # Fall back to Unstructured (may require OCR deps for scanned PDFs).
-        return await asyncio.to_thread(_extract_with_unstructured, file_path)
+        extracted = await asyncio.to_thread(_extract_with_unstructured, file_path)
+        return _ensure_pdf_text_quality(extracted, filename)
 
     if ext in {".docx", ".txt"}:
         return await asyncio.to_thread(_extract_with_unstructured, file_path)

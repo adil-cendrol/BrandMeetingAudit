@@ -23,11 +23,11 @@ Rules:
 1) Every decision, action, insight, and gap must reference evidence IDs from evidencePool.
 2) No score or insight without evidence.
 3) Summary statements max 3 sentences, professional and objective.
-4) Strict mode: if approvals exist and either financial risk analysis or legal confirmation is missing, overall score cannot exceed 70.
+4) Strict mode: for any item labeled Approval/Decision, if either financial risk analysis or legal confirmation is missing, overall score cannot exceed 70.
 5) Gap checks:
-- Blindspot Check: capex above threshold with missing stress/sensitivity analysis => Missing financial stress test.
-- ISO 37000 Alignment Check: ESG/operations with weak ethics/compliance references => ISO governance alignment gap.
-- Decision Clarity Check: decision request but unclear options => Vague recommendation.
+- Blindspot Check: if capex exceeds threshold or FX exposure exists and stress/sensitivity analysis is missing => Missing financial stress test.
+- ISO 37000 Alignment Check: ESG/operations with weak Principle 6 (social responsibility) or Principle 10 (risk governance) signals => ISO governance alignment gap.
+- Decision Purpose Check: decision request but options/recommendation unclear => Vague recommendation.
 Weights:
 - Evidence Completeness 40%
 - Strategic Alignment 20%
@@ -35,7 +35,7 @@ Weights:
 - Governance Hygiene 15%
 Thresholds:
 - 90-100 green Decision Ready
-- 70-89 amber Minor gaps present
+- 70-89 amber Informational gap
 - below 70 red Governance risk detected
 """.strip()
 
@@ -50,6 +50,24 @@ def as_id(prefix: str, index: int) -> str:
 
 def clamp_score(value: float) -> int:
     return max(0, min(100, round(value)))
+
+
+def apply_strict_mode_adjustment(score: int, gap_check: dict[str, Any]) -> int:
+    """
+    Replace hard cap behavior with a configurable penalty.
+    Default penalty is 15 points when approval exists but risk/legal evidence gate is not satisfied.
+    """
+    needs_penalty = gap_check["hasApproval"] and (not gap_check["hasSensitivity"] or not gap_check["hasLegal"])
+    if not needs_penalty:
+        return score
+
+    # If enabled, enforce strict rubric cap for Approval items.
+    strict_cap_enabled = os.getenv("STRICT_MODE_HARD_CAP", "true").strip().lower() == "true"
+    if strict_cap_enabled:
+        return min(score, 70)
+
+    penalty = int(os.getenv("STRICT_MODE_PENALTY", "15"))
+    return clamp_score(score - max(0, penalty))
 
 
 def split_sentences(text: str) -> list[str]:
@@ -307,18 +325,33 @@ def detect_gaps(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, Any
     has_legal = bool(re.search(r"legal counsel|general counsel|legal confirmation|regulatory sign[- ]off", lower))
     has_approval = bool(re.search(r"approval|approve|approved|resolution", lower))
 
-    capex_match = re.search(r"capex[^.\n]{0,50}(\d[\d,]*(?:\.\d+)?)\s?(m|million|bn|billion)?", lower)
-    if capex_match and not has_sensitivity:
+    capex_threshold_m = float(os.getenv("CAPEX_THRESHOLD_MUSD", "10"))
+
+    def capex_amount_m() -> float | None:
+        capex_match = re.search(r"capex[^.\n]{0,50}(\d[\d,]*(?:\.\d+)?)\s?(m|million|bn|billion)?", lower)
+        if not capex_match:
+            return None
+        raw_value = float(capex_match.group(1).replace(",", ""))
+        unit = (capex_match.group(2) or "").lower()
+        if unit in {"bn", "billion"}:
+            return raw_value * 1000
+        return raw_value
+
+    capex_m = capex_amount_m()
+    has_fx_exposure = bool(re.search(r"\bfx\b|foreign exchange|currency volatility|exchange rate", lower))
+    capex_material = capex_m is not None and capex_m >= capex_threshold_m
+
+    if (capex_material or has_fx_exposure) and has_approval and not has_sensitivity:
         ref = find_evidence_id(evidence_pool, r"capex|capital expenditure", 0)
         gaps.append(
             {
                 "id": "GAP001",
                 "rule": "Blindspot Check",
                 "flag": "Missing financial stress test",
-                "description": "Capital expenditure appears material but stress or sensitivity analysis is not evidenced.",
+                "description": "Material capex/FX exposure appears present but stress or sensitivity analysis is not evidenced.",
                 "severity": "high",
                 "evidenceRefs": [ref] if ref else [],
-                "remediation": "Attach 3-year P&L forecast with downside and base-case sensitivity scenarios.",
+                "remediation": "Management to attach Appendix with 3-year P&L forecast and downside/base-case sensitivity scenarios.",
             }
         )
 
@@ -330,11 +363,11 @@ def detect_gaps(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, Any
             {
                 "id": "GAP002",
                 "rule": "ISO 37000 Alignment Check",
-                "flag": "ISO governance alignment gap",
-                "description": "ESG or operations content lacks explicit ethical or governance-compliance references.",
+                "flag": "Incomplete ISO 37000 alignment",
+                "description": "ESG/operations content lacks explicit Principle 6 (social responsibility) or Principle 10 (risk governance) references.",
                 "severity": "medium",
                 "evidenceRefs": [ref] if ref else [],
-                "remediation": "Add explicit governance, ethics, and compliance references aligned to ISO 37000 principles.",
+                "remediation": "Rewrite section to include explicit ISO 37000 Principle 6/10 governance and compliance framing.",
             }
         )
 
@@ -345,7 +378,7 @@ def detect_gaps(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, Any
         gaps.append(
             {
                 "id": "GAP003",
-                "rule": "Decision Clarity Check",
+                "rule": "Decision Purpose Check",
                 "flag": "Vague recommendation",
                 "description": "Decision request is present, but options and trade-offs are not clearly structured.",
                 "severity": "medium",
@@ -416,9 +449,7 @@ def normalise_model_output(assessment_id: str, meeting_name: str, model_output: 
 
     gap_check = detect_gaps(transcript, evidence_pool)
     gaps = model_output.get("gaps") if isinstance(model_output.get("gaps"), list) else gap_check["gaps"]
-
-    if gap_check["hasApproval"] and (not gap_check["hasSensitivity"] or not gap_check["hasLegal"]):
-        governance_score = min(governance_score, 70)
+    governance_score = apply_strict_mode_adjustment(governance_score, gap_check)
 
     return {
         "id": assessment_id,

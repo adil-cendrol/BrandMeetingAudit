@@ -9,12 +9,39 @@ const assessmentRoutes = require('./src/routes/assessments');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const configuredOrigins = [
+    process.env.CLIENT_URL,
+    ...(process.env.ALLOWED_ORIGINS || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean),
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+].filter(Boolean);
+
+function isAllowedOrigin(origin) {
+    if (!origin) return true;
+    if (configuredOrigins.includes(origin)) return true;
+    if (origin.endsWith('.onrender.com')) return true;
+    return false;
+}
+
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 // Middleware
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173', credentials: true }));
+app.use(cors({
+    origin: (origin, callback) => {
+        if (isAllowedOrigin(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

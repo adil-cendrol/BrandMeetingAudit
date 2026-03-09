@@ -3,6 +3,7 @@ const path = require('path');
 const pdfParseLib = require('pdf-parse');
 const mammoth = require('mammoth');
 const { OpenAI } = require('openai');
+const { isPageIndexEnabled, extractPdfWithPageIndex } = require('./pageIndexClient');
 
 const openai = process.env.OPENAI_API_KEY
     ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
@@ -16,6 +17,17 @@ async function extractTextFromFile(filePath, filename) {
     }
 
     if (ext === '.pdf') {
+        if (isPageIndexEnabled()) {
+            try {
+                const pageIndexResult = await extractPdfWithPageIndex(filePath);
+                if (pageIndexResult?.text?.trim()) {
+                    return pageIndexResult.text;
+                }
+            } catch (err) {
+                console.warn(`PageIndex fallback to local parser for ${filename}: ${err.message}`);
+            }
+        }
+
         const dataBuffer = fs.readFileSync(filePath);
         // pdf-parse v2 exports PDFParse class; v1 exports a function.
         if (typeof pdfParseLib === 'function') {

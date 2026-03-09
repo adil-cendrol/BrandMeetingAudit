@@ -73,26 +73,26 @@ export default function Sidebar() {
                     </div>
                 ))}
 
-                <div className="sidebar-section" style={{ marginTop: '24px' }}>Settings</div>
-                <div className="nav-item">
+                {/* <div className="sidebar-section" style={{ marginTop: '24px' }}>Settings</div> */}
+                {/* <div className="nav-item">
                     <span className="nav-item-icon">⚙️</span>
                     <div className="nav-item-content">
                         <div className="nav-item-label">Preferences</div>
                     </div>
-                </div>
-                <div className="nav-item">
+                </div> */}
+                {/* <div className="nav-item">
                     <span className="nav-item-icon">🏢</span>
                     <div className="nav-item-content">
                         <div className="nav-item-label">Organisation</div>
                     </div>
-                </div>
+                </div> */}
             </div>
 
             {/* Footer */}
             <div className="sidebar-footer">
-                <div className="avatar">GB</div>
+                <div className="avatar">R</div>
                 <div className="user-info">
-                    <div className="user-name">G. Blackwood</div>
+                    <div className="user-name">Rehan</div>
                     <div className="user-role">Company Secretary</div>
                 </div>
             </div>

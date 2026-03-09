@@ -448,9 +448,7 @@ async function runGovernanceAnalysis(assessmentId, meetingName, files) {
 
   const openai = getOpenAiClient();
   if (!openai) {
-    const deterministic = runDeterministicAnalysis(assessmentId, meetingName, transcriptText);
-    validateEvidenceReferences(deterministic);
-    return deterministic;
+    throw new Error('OPENAI_API_KEY is required. Fallback analysis is disabled.');
   }
 
   try {
@@ -472,9 +470,7 @@ async function runGovernanceAnalysis(assessmentId, meetingName, files) {
     validateEvidenceReferences(normalised);
     return normalised;
   } catch (error) {
-    const fallback = runDeterministicAnalysis(assessmentId, meetingName, transcriptText);
-    validateEvidenceReferences(fallback);
-    return fallback;
+    throw new Error(`Governance analysis failed: ${error.message}`);
   }
 }
 

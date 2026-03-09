@@ -24,7 +24,7 @@ async function extractTextFromFile(filePath, filename) {
                     return pageIndexResult.text;
                 }
             } catch (err) {
-                console.warn(`PageIndex fallback to local parser for ${filename}: ${err.message}`);
+                throw new Error(`PageIndex extraction failed for ${filename}: ${err.message}`);
             }
         }
 
@@ -85,11 +85,11 @@ async function processUploadedFiles(files) {
             combinedText += `\\n\\n--- Document: ${originalName} ---\\n${text}\\n`;
         } catch (e) {
             console.error(`Failed to parse ${originalName}`, e);
-      combinedText += `\\n\\n--- Document: ${originalName} (Failed to parse) ---\\n`;
+            throw new Error(`Failed to parse ${originalName}: ${e.message}`);
+        }
     }
-  }
-  
-  return combinedText;
+
+    return combinedText;
 }
 
 module.exports = { processUploadedFiles };

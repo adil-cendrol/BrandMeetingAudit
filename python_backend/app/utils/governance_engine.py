@@ -62,7 +62,7 @@ def apply_strict_mode_adjustment(score: int, gap_check: dict[str, Any]) -> int:
         return score
 
     # If enabled, enforce strict rubric cap for Approval items.
-    strict_cap_enabled = os.getenv("STRICT_MODE_HARD_CAP", "true").strip().lower() == "true"
+    strict_cap_enabled = os.getenv("STRICT_MODE_HARD_CAP", "false").strip().lower() == "false"
     if strict_cap_enabled:
         return min(score, 70)
 

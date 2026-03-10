@@ -62,7 +62,7 @@ def apply_strict_mode_adjustment(score: int, gap_check: dict[str, Any]) -> int:
         return score
 
     # If enabled, enforce strict rubric cap for Approval items.
-    strict_cap_enabled = os.getenv("STRICT_MODE_HARD_CAP", "false").strip().lower() == "false"
+    strict_cap_enabled = os.getenv("STRICT_MODE_HARD_CAP", "false").strip().lower() == "true"
     if strict_cap_enabled:
         return min(score, 70)
 
@@ -79,6 +79,65 @@ def enforce_three_sentence_limit(text: str) -> str:
     if len(parts) <= 3:
         return text
     return " ".join(parts[:3])
+
+
+def infer_duration(text: str) -> str:
+    source = text or ""
+
+    patterns = [
+        r"\bduration\s*[:\-]?\s*(\d{1,3})\s*(minutes?|mins?|hours?|hrs?)\b",
+        r"\bmeeting\s+duration\s*[:\-]?\s*(\d{1,3})\s*(minutes?|mins?|hours?|hrs?)\b",
+        r"\bfor\s+(\d{1,3})\s*(minutes?|mins?|hours?|hrs?)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, source, re.IGNORECASE)
+        if not match:
+            continue
+        value = match.group(1)
+        unit = match.group(2).lower()
+        if unit.startswith("hour") or unit.startswith("hr"):
+            unit = "hours" if value != "1" else "hour"
+        else:
+            unit = "minutes" if value != "1" else "minute"
+        return f"{value} {unit}"
+
+    time_range = re.search(
+        r"\b(\d{1,2})[:.](\d{2})\s*(am|pm)?\s*(?:-|to)\s*(\d{1,2})[:.](\d{2})\s*(am|pm)?\b",
+        source,
+        re.IGNORECASE,
+    )
+    if time_range:
+        start_h, start_m, start_period, end_h, end_m, end_period = time_range.groups()
+        if start_period and not end_period:
+            end_period = start_period
+        if end_period and not start_period:
+            start_period = end_period
+
+        def to_minutes(hour: str, minute: str, period: str | None) -> int:
+            h = int(hour)
+            m = int(minute)
+            if period:
+                period = period.lower()
+                if period == "pm" and h != 12:
+                    h += 12
+                if period == "am" and h == 12:
+                    h = 0
+            return h * 60 + m
+
+        start_total = to_minutes(start_h, start_m, start_period)
+        end_total = to_minutes(end_h, end_m, end_period)
+        if end_total < start_total:
+            end_total += 24 * 60
+        diff = end_total - start_total
+        if diff > 0:
+            hours, minutes = divmod(diff, 60)
+            if hours and minutes:
+                return f"{hours} hour {minutes} minutes" if hours == 1 else f"{hours} hours {minutes} minutes"
+            if hours:
+                return f"{hours} hour" if hours == 1 else f"{hours} hours"
+            return f"{minutes} minutes"
+
+    return "90 minutes"
 
 
 def infer_speaker_and_timestamp(line: str) -> dict[str, str]:
@@ -125,6 +184,94 @@ def find_evidence_id(evidence_pool: list[dict[str, Any]], pattern: str, fallback
     if 0 <= fallback_index < len(evidence_pool):
         return evidence_pool[fallback_index].get("id")
     return None
+
+
+def _normalise_action_text(text: str) -> str:
+    cleaned = re.sub(r"^\s*(action|action item|follow[- ]up|next steps?)\s*[:\-]\s*", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:\t")
+    return cleaned[:220]
+
+
+def _extract_due_value(text: str) -> str:
+    patterns = [
+        r"\bdue\s+(by\s+)?([A-Za-z]{3,9}\s+\d{1,2}(?:,\s*\d{4})?)\b",
+        r"\bby\s+([A-Za-z]{3,9}\s+\d{1,2}(?:,\s*\d{4})?)\b",
+        r"\bwithin\s+(\d+\s+(?:day|days|week|weeks|month|months))\b",
+        r"\bin\s+(\d+\s+(?:day|days|week|weeks|month|months))\b",
+        r"\b(\d+\s+(?:day|days|week|weeks|month|months))\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        value = next((group for group in match.groups()[::-1] if group), None)
+        if value:
+            return value.strip()
+    return "TBD"
+
+
+def _extract_owner_value(text: str, default_owner: str = "Unassigned") -> str:
+    patterns = [
+        r"\bowner\s*[:\-]\s*([A-Z][A-Za-z&/ ,.-]{2,60})",
+        r"\bassigned to\s+([A-Z][A-Za-z&/ ,.-]{2,60})",
+        r"\b([A-Z][A-Za-z&/ ,.-]{2,60})\s+to\s+[a-z]",
+        r"^([A-Z][A-Za-z&/ ,.-]{2,60})\s*[:\-]\s*",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        owner = re.sub(r"\s+", " ", match.group(1)).strip(" ,.-")
+        if owner:
+            return owner[:80]
+    return default_owner
+
+
+def extract_action_items(text: str, evidence_pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    candidates: list[str] = []
+    keyword_re = re.compile(
+        r"\b(action item|follow[- ]up|next step|owner|deadline|due date|assigned to|will prepare|will circulate|to circulate|to prepare|to provide|to submit|to review|to update)\b",
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        if keyword_re.search(line):
+            candidates.append(line)
+
+    sentence_candidates = []
+    for sentence in split_sentences(text):
+        if keyword_re.search(sentence):
+            sentence_candidates.append(sentence)
+
+    seen: set[str] = set()
+    action_items: list[dict[str, Any]] = []
+    for raw in candidates + sentence_candidates:
+        action_text = _normalise_action_text(raw)
+        if len(action_text) < 18:
+            continue
+        dedupe_key = action_text.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        evidence_ref = find_evidence_id(evidence_pool, re.escape(raw[:80]), 0)
+        if not evidence_ref:
+            evidence_ref = find_evidence_id(evidence_pool, r"action|follow up|owner|deadline|due", 0)
+
+        action_items.append(
+            {
+                "id": as_id("A", len(action_items)),
+                "action": enforce_three_sentence_limit(action_text),
+                "owner": _extract_owner_value(raw),
+                "due": _extract_due_value(raw),
+                "evidenceRef": evidence_ref,
+            }
+        )
+        if len(action_items) >= 6:
+            break
+
+    return [item for item in action_items if item.get("evidenceRef")]
 
 
 def compute_category_scores(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, int]:
@@ -177,8 +324,23 @@ def build_minutes(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, A
     apologies = unique_participants[7:9] if len(unique_participants) > 7 else ["No formal apologies captured"]
 
     decision_evidence = find_evidence_id(evidence_pool, r"approve|approved|resolution|resolved|decision", 1)
-    action_evidence = find_evidence_id(evidence_pool, r"action|follow up|owner|deadline|due", 2)
     unresolved_evidence = find_evidence_id(evidence_pool, r"defer|pending|unresolved|follow-up|open issue", 3)
+    action_items = extract_action_items(text, evidence_pool)
+
+    if not action_items:
+        action_evidence = find_evidence_id(evidence_pool, r"action|follow up|owner|deadline|due", 2)
+        if action_evidence:
+            action_items = [
+                {
+                    "id": "A001",
+                    "action": enforce_three_sentence_limit(
+                        "Management to circulate revised board paper with downside sensitivity and legal confirmation notes."
+                    ),
+                    "owner": "CFO and Company Secretary",
+                    "due": "14 days",
+                    "evidenceRef": action_evidence,
+                }
+            ]
 
     return {
         "attendees": attendees,
@@ -194,19 +356,7 @@ def build_minutes(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, A
         ]
         if decision_evidence
         else [],
-        "actionItems": [
-            {
-                "id": "A001",
-                "action": enforce_three_sentence_limit(
-                    "Management to circulate revised board paper with downside sensitivity and legal confirmation notes."
-                ),
-                "owner": "CFO and Company Secretary",
-                "due": "14 days",
-                "evidenceRef": action_evidence,
-            }
-        ]
-        if action_evidence
-        else [],
+        "actionItems": action_items,
         "unresolvedMatters": [
             {
                 "id": "U001",
@@ -454,7 +604,7 @@ def normalise_model_output(assessment_id: str, meeting_name: str, model_output: 
     return {
         "id": assessment_id,
         "meetingName": meeting_name,
-        "duration": model_output.get("duration") or "90 minutes",
+        "duration": model_output.get("duration") or infer_duration(transcript),
         "participants": model_output.get("participants") or [],
         "categoryScores": category_scores,
         "governanceScore": governance_score,

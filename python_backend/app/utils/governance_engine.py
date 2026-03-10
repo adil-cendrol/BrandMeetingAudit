@@ -81,7 +81,7 @@ def enforce_three_sentence_limit(text: str) -> str:
     return " ".join(parts[:3])
 
 
-def infer_duration(text: str) -> str:
+def infer_duration(text: str) -> str | None:
     source = text or ""
 
     patterns = [
@@ -137,7 +137,7 @@ def infer_duration(text: str) -> str:
                 return f"{hours} hour" if hours == 1 else f"{hours} hours"
             return f"{minutes} minutes"
 
-    return "90 minutes"
+    return None
 
 
 def infer_speaker_and_timestamp(line: str) -> dict[str, str]:
@@ -323,148 +323,23 @@ def build_minutes(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, A
     attendees = [f"{name} (Board Member)" for name in unique_participants[:7]]
     apologies = unique_participants[7:9] if len(unique_participants) > 7 else ["No formal apologies captured"]
 
-    decision_evidence = find_evidence_id(evidence_pool, r"approve|approved|resolution|resolved|decision", 1)
-    unresolved_evidence = find_evidence_id(evidence_pool, r"defer|pending|unresolved|follow-up|open issue", 3)
     action_items = extract_action_items(text, evidence_pool)
-
-    if not action_items:
-        action_evidence = find_evidence_id(evidence_pool, r"action|follow up|owner|deadline|due", 2)
-        if action_evidence:
-            action_items = [
-                {
-                    "id": "A001",
-                    "action": enforce_three_sentence_limit(
-                        "Management to circulate revised board paper with downside sensitivity and legal confirmation notes."
-                    ),
-                    "owner": "CFO and Company Secretary",
-                    "due": "14 days",
-                    "evidenceRef": action_evidence,
-                }
-            ]
 
     return {
         "attendees": attendees,
         "apologies": apologies,
-        "keyDecisions": [
-            {
-                "id": "D001",
-                "decision": enforce_three_sentence_limit(
-                    "Capital allocation recommendation progressed subject to enhanced risk scenario validation."
-                ),
-                "evidenceRef": decision_evidence,
-            }
-        ]
-        if decision_evidence
-        else [],
+        "keyDecisions": [],
         "actionItems": action_items,
-        "unresolvedMatters": [
-            {
-                "id": "U001",
-                "matter": enforce_three_sentence_limit(
-                    "Final investment approval deferred pending stress-testing evidence and option comparison."
-                ),
-                "evidenceRef": unresolved_evidence,
-            }
-        ]
-        if unresolved_evidence
-        else [],
+        "unresolvedMatters": [],
     }
 
 
 def build_insights(text: str, evidence_pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    financial_ref = find_evidence_id(evidence_pool, r"capex|cash|forecast|budget|stress|sensitivity|liquidity", 0)
-    strategy_ref = find_evidence_id(evidence_pool, r"strategy|roadmap|objective|portfolio|growth|priorit", 1)
-    compliance_ref = find_evidence_id(evidence_pool, r"compliance|ethic|regulat|legal|policy|iso", 2)
-
-    return [
-        {
-            "category": "Financial Oversight",
-            "icon": "TrendingUp",
-            "insights": [
-                {
-                    "id": "I001",
-                    "text": enforce_three_sentence_limit(
-                        "Financial discussion identifies commitment appetite but requires clearer downside sensitivity evidence for full assurance."
-                    ),
-                    "confidence": 84,
-                    "evidenceRef": financial_ref,
-                }
-            ]
-            if financial_ref
-            else [],
-        },
-        {
-            "category": "Strategic Alignment",
-            "icon": "Target",
-            "insights": [
-                {
-                    "id": "I002",
-                    "text": enforce_three_sentence_limit(
-                        "Board challenge is directionally aligned to strategy, with limited explicit prioritisation trade-off framing."
-                    ),
-                    "confidence": 80,
-                    "evidenceRef": strategy_ref,
-                }
-            ]
-            if strategy_ref
-            else [],
-        },
-        {
-            "category": "Regulatory Compliance",
-            "icon": "Shield",
-            "insights": [
-                {
-                    "id": "I003",
-                    "text": enforce_three_sentence_limit(
-                        "Compliance references appear present but legal assurance depth varies across approval-critical sections."
-                    ),
-                    "confidence": 77,
-                    "evidenceRef": compliance_ref,
-                }
-            ]
-            if compliance_ref
-            else [],
-        },
-    ]
+    return []
 
 
 def build_engagement(text: str) -> dict[str, Any]:
-    lower = (text or "").lower()
-    ceo_dominance = "ceo" in lower and not re.search(r"independent director|non-executive|n\.ed|challenge", lower)
-    weak_debate = not re.search(r"challenge|counterpoint|alternative|option", lower)
-
-    return {
-        "radarData": [
-            {"axis": "Processing Depth", "value": 78},
-            {"axis": "Challenger behavior", "value": 52 if weak_debate else 74},
-            {"axis": "Sentiment", "value": 70},
-            {"axis": "Consensus", "value": 72},
-        ],
-        "signals": [
-            {
-                "id": "S001",
-                "signal": "Dominated by CEO" if ceo_dominance else "Balanced contribution pattern",
-                "severity": "warning" if ceo_dominance else "positive",
-                "description": "Contribution balance indicates heavy executive airtime relative to independent challenge."
-                if ceo_dominance
-                else "Discussion appears distributed across participants with observable challenge behaviours.",
-            },
-            {
-                "id": "S002",
-                "signal": "Weak debate signals" if weak_debate else "Constructive debate evidence",
-                "severity": "critical" if weak_debate else "positive",
-                "description": "Limited alternatives testing detected in approval-sensitive agenda items."
-                if weak_debate
-                else "Multiple alternatives and challenge questions appear in the transcript.",
-            },
-            {
-                "id": "S003",
-                "signal": "Independent directors limited voice",
-                "severity": "warning" if re.search(r"independent director|non-executive", lower) else "critical",
-                "description": "Independent director interventions are not consistently prominent in key decision passages.",
-            },
-        ],
-    }
+    return {"radarData": [], "signals": []}
 
 
 def detect_gaps(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, Any]:
@@ -605,14 +480,14 @@ def normalise_model_output(assessment_id: str, meeting_name: str, model_output: 
         "id": assessment_id,
         "meetingName": meeting_name,
         "duration": model_output.get("duration") or infer_duration(transcript),
-        "participants": model_output.get("participants") or [],
+        "participants": model_output.get("participants") if isinstance(model_output.get("participants"), list) else [],
         "categoryScores": category_scores,
         "governanceScore": governance_score,
         "riskIndicator": model_output.get("riskIndicator") or to_risk_indicator(governance_score),
         "gaps": gaps,
-        "minutes": model_output.get("minutes") or build_minutes(transcript, evidence_pool),
-        "insights": model_output.get("insights") or build_insights(transcript, evidence_pool),
-        "engagement": model_output.get("engagement") or build_engagement(transcript),
+        "minutes": model_output.get("minutes") if isinstance(model_output.get("minutes"), dict) else build_minutes(transcript, evidence_pool),
+        "insights": model_output.get("insights") if isinstance(model_output.get("insights"), list) else build_insights(transcript, evidence_pool),
+        "engagement": model_output.get("engagement") if isinstance(model_output.get("engagement"), dict) else build_engagement(transcript),
         "evidencePool": evidence_pool,
         "weights": WEIGHTS,
         "completedAt": _now_iso(),

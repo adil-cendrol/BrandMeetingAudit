@@ -24,7 +24,10 @@ Rules:
 2) No score or insight without evidence.
 3) Summary statements max 3 sentences, professional and objective.
 4) Strict mode: for any item labeled Approval/Decision, if either financial risk analysis or legal confirmation is missing, overall score cannot exceed 70.
-5) Gap checks:
+5) Insights and engagement must be derived from the supplied transcript only. Do not invent facts, names, numbers, or events.
+6) Return at least 3 insight items in total across the insight categories when the transcript contains enough evidence.
+7) Return at least 3 engagement radar points and at least 2 engagement signals when the transcript contains enough evidence.
+8) Gap checks:
 - Blindspot Check: if capex exceeds threshold or FX exposure exists and stress/sensitivity analysis is missing => Missing financial stress test.
 - ISO 37000 Alignment Check: ESG/operations with weak Principle 6 (social responsibility) or Principle 10 (risk governance) signals => ISO governance alignment gap.
 - Decision Purpose Check: decision request but options/recommendation unclear => Vague recommendation.
@@ -334,12 +337,260 @@ def build_minutes(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, A
     }
 
 
+def _clean_insight_sentence(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    return enforce_three_sentence_limit(cleaned.strip(" -:\t")[:240])
+
+
+def _extract_candidate_sentences(text: str) -> list[str]:
+    candidates: list[str] = []
+    for line in (text or "").splitlines():
+        clean = line.strip()
+        if not clean or clean.startswith("--- Document:"):
+            continue
+        if len(clean) >= 30:
+            candidates.append(clean)
+    for sentence in split_sentences(text):
+        clean = sentence.strip()
+        if len(clean) >= 30:
+            candidates.append(clean)
+    return candidates
+
+
+def _find_matching_evidence_ref(sentence: str, evidence_pool: list[dict[str, Any]], fallback_index: int = 0) -> str | None:
+    tokens = re.findall(r"[A-Za-z]{4,}", sentence or "")
+    unique_tokens: list[str] = []
+    for token in tokens:
+        lowered = token.lower()
+        if lowered not in unique_tokens:
+            unique_tokens.append(lowered)
+        if len(unique_tokens) >= 6:
+            break
+
+    if unique_tokens:
+        pattern = "|".join(re.escape(token) for token in unique_tokens)
+        ref = find_evidence_id(evidence_pool, pattern, fallback_index)
+        if ref:
+            return ref
+    return find_evidence_id(evidence_pool, re.escape((sentence or "")[:80]), fallback_index)
+
+
 def build_insights(text: str, evidence_pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return []
+    categories = [
+        ("Financial Oversight", re.compile(r"budget|revenue|ebitda|cash|margin|cost|forecast|capex|opex|finance|financial|investment|profit|loss", re.IGNORECASE)),
+        ("Strategic Alignment", re.compile(r"strategy|strategic|roadmap|objective|growth|market|customer|product|initiative|target|plan|priority", re.IGNORECASE)),
+        ("Risk & Governance", re.compile(r"risk|compliance|legal|audit|control|policy|governance|ethic|regulatory|mitigat|assurance|oversight", re.IGNORECASE)),
+    ]
+    candidates = _extract_candidate_sentences(text)
+    seen: set[str] = set()
+    output: list[dict[str, Any]] = []
+    running_index = 0
+
+    for category_name, pattern in categories:
+        items: list[dict[str, Any]] = []
+        for sentence in candidates:
+            if not pattern.search(sentence):
+                continue
+            cleaned = _clean_insight_sentence(sentence)
+            dedupe_key = cleaned.lower()
+            if dedupe_key in seen:
+                continue
+            evidence_ref = _find_matching_evidence_ref(cleaned, evidence_pool, running_index)
+            if not evidence_ref:
+                continue
+            confidence = clamp_score(68 + min(24, len(re.findall(r"[A-Za-z]{4,}", cleaned)) // 2))
+            items.append(
+                {
+                    "id": as_id("INS", running_index),
+                    "text": cleaned,
+                    "confidence": confidence,
+                    "evidenceRef": evidence_ref,
+                }
+            )
+            seen.add(dedupe_key)
+            running_index += 1
+            if len(items) >= 3:
+                break
+        output.append({"category": category_name, "insights": items})
+
+    total_items = sum(len(cat["insights"]) for cat in output)
+    if total_items < 3:
+        for sentence in candidates:
+            cleaned = _clean_insight_sentence(sentence)
+            dedupe_key = cleaned.lower()
+            if dedupe_key in seen:
+                continue
+            evidence_ref = _find_matching_evidence_ref(cleaned, evidence_pool, running_index)
+            if not evidence_ref:
+                continue
+            output[-1]["insights"].append(
+                {
+                    "id": as_id("INS", running_index),
+                    "text": cleaned,
+                    "confidence": 70,
+                    "evidenceRef": evidence_ref,
+                }
+            )
+            seen.add(dedupe_key)
+            running_index += 1
+            total_items += 1
+            if total_items >= 3:
+                break
+
+    return output
 
 
 def build_engagement(text: str) -> dict[str, Any]:
-    return {"radarData": [], "signals": []}
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip() and not line.strip().startswith("--- Document:")]
+    speaker_turns: dict[str, int] = {}
+    question_turns = 0
+    challenge_turns = 0
+    total_turns = 0
+    total_words = 0
+
+    for line in lines:
+        meta = infer_speaker_and_timestamp(line)
+        speaker = meta["speaker"]
+        if speaker != "Unknown":
+            speaker_turns[speaker] = speaker_turns.get(speaker, 0) + 1
+            total_turns += 1
+        total_words += len(re.findall(r"\b\w+\b", line))
+        if "?" in line:
+            question_turns += 1
+        if re.search(r"\b(challenge|concern|risk|why|how|assumption|mitigation|downside|scenario|evidence)\b", line, re.IGNORECASE):
+            challenge_turns += 1
+
+    unique_speakers = len(speaker_turns)
+    avg_words = round(total_words / max(1, len(lines)))
+    top_share = max(speaker_turns.values(), default=0) / max(1, total_turns)
+
+    radar_data = [
+        {"axis": "Participation Balance", "value": clamp_score(100 - round(max(0, top_share - 0.35) * 120))},
+        {"axis": "Breadth of Participation", "value": clamp_score(min(100, unique_speakers * 14))},
+        {"axis": "Challenge Intensity", "value": clamp_score(min(100, round((challenge_turns / max(1, len(lines))) * 220)))},
+        {"axis": "Inquiry Depth", "value": clamp_score(min(100, round((question_turns / max(1, len(lines))) * 240)))},
+        {"axis": "Discussion Depth", "value": clamp_score(min(100, avg_words * 3))},
+    ]
+
+    signals: list[dict[str, str]] = []
+    if unique_speakers >= 4 and top_share <= 0.45:
+        signals.append(
+            {
+                "id": "SIG001",
+                "signal": "Broad participation",
+                "severity": "positive",
+                "description": f"{unique_speakers} speakers contributed with no single speaker dominating the discussion.",
+            }
+        )
+    if top_share >= 0.6:
+        dominant = max(speaker_turns, key=speaker_turns.get) if speaker_turns else "One speaker"
+        signals.append(
+            {
+                "id": "SIG002",
+                "signal": "Concentrated discussion",
+                "severity": "warning",
+                "description": f"{dominant} accounted for a disproportionate share of speaking turns, which may have limited challenge from the wider board.",
+            }
+        )
+    if challenge_turns >= 2:
+        signals.append(
+            {
+                "id": "SIG003",
+                "signal": "Active challenge observed",
+                "severity": "positive",
+                "description": "The transcript includes repeated challenge, risk, or evidence-seeking language, indicating active scrutiny of proposals.",
+            }
+        )
+    if question_turns < 2:
+        signals.append(
+            {
+                "id": "SIG004",
+                "signal": "Limited visible questioning",
+                "severity": "warning",
+                "description": "Few explicit questions were detected, suggesting that challenge may not be strongly evidenced in the recorded discussion.",
+            }
+        )
+    if question_turns >= 2:
+        signals.append(
+            {
+                "id": "SIG005",
+                "signal": "Question-led discussion",
+                "severity": "positive",
+                "description": "Multiple explicit questions were detected, indicating visible inquiry and challenge in the discussion flow.",
+            }
+        )
+    if avg_words >= 18:
+        signals.append(
+            {
+                "id": "SIG006",
+                "signal": "Substantive discussion turns",
+                "severity": "positive",
+                "description": "Average speaking turns were relatively detailed, which suggests substantive discussion rather than brief procedural exchanges.",
+            }
+        )
+
+    return {"radarData": radar_data, "signals": signals[:4]}
+
+
+def ensure_minimum_analysis(results: dict[str, Any], transcript: str) -> dict[str, Any]:
+    insights = results.get("insights") if isinstance(results.get("insights"), list) else []
+    total_insights = sum(len(cat.get("insights", [])) for cat in insights if isinstance(cat, dict))
+    if total_insights < 3:
+        results["insights"] = build_insights(transcript, results.get("evidencePool", []))
+
+    engagement = results.get("engagement") if isinstance(results.get("engagement"), dict) else {}
+    radar_data = engagement.get("radarData") if isinstance(engagement.get("radarData"), list) else []
+    signals = engagement.get("signals") if isinstance(engagement.get("signals"), list) else []
+    if len(radar_data) < 3 or len(signals) < 2:
+        results["engagement"] = build_engagement(transcript)
+
+    return results
+
+
+def normalise_minutes_output(value: Any, transcript: str, evidence_pool: list[dict[str, Any]]) -> dict[str, Any]:
+    fallback = build_minutes(transcript, evidence_pool)
+    if not isinstance(value, dict):
+        return fallback
+
+    return {
+        "attendees": value.get("attendees") if isinstance(value.get("attendees"), list) else fallback["attendees"],
+        "apologies": value.get("apologies") if isinstance(value.get("apologies"), list) else fallback["apologies"],
+        "keyDecisions": value.get("keyDecisions") if isinstance(value.get("keyDecisions"), list) else fallback["keyDecisions"],
+        "actionItems": value.get("actionItems") if isinstance(value.get("actionItems"), list) else fallback["actionItems"],
+        "unresolvedMatters": value.get("unresolvedMatters") if isinstance(value.get("unresolvedMatters"), list) else fallback["unresolvedMatters"],
+    }
+
+
+def normalise_insights_output(value: Any, transcript: str, evidence_pool: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fallback = build_insights(transcript, evidence_pool)
+    if not isinstance(value, list):
+        return fallback
+
+    normalised: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        category = item.get("category") if isinstance(item.get("category"), str) and item.get("category").strip() else f"Category {index + 1}"
+        insights = item.get("insights") if isinstance(item.get("insights"), list) else []
+        valid_items = [ins for ins in insights if isinstance(ins, dict) and ins.get("text") and ins.get("evidenceRef")]
+        normalised.append({"category": category, "insights": valid_items})
+
+    total_insights = sum(len(cat["insights"]) for cat in normalised)
+    return normalised if total_insights >= 3 else fallback
+
+
+def normalise_engagement_output(value: Any, transcript: str) -> dict[str, Any]:
+    fallback = build_engagement(transcript)
+    if not isinstance(value, dict):
+        return fallback
+
+    normalised = {
+        "radarData": value.get("radarData") if isinstance(value.get("radarData"), list) else fallback["radarData"],
+        "signals": value.get("signals") if isinstance(value.get("signals"), list) else fallback["signals"],
+    }
+    if len(normalised["radarData"]) < 3 or len(normalised["signals"]) < 2:
+        return fallback
+    return normalised
 
 
 def detect_gaps(text: str, evidence_pool: list[dict[str, Any]]) -> dict[str, Any]:
@@ -476,7 +727,7 @@ def normalise_model_output(assessment_id: str, meeting_name: str, model_output: 
     gaps = model_output.get("gaps") if isinstance(model_output.get("gaps"), list) else gap_check["gaps"]
     governance_score = apply_strict_mode_adjustment(governance_score, gap_check)
 
-    return {
+    results = {
         "id": assessment_id,
         "meetingName": meeting_name,
         "duration": model_output.get("duration") or infer_duration(transcript),
@@ -485,13 +736,14 @@ def normalise_model_output(assessment_id: str, meeting_name: str, model_output: 
         "governanceScore": governance_score,
         "riskIndicator": model_output.get("riskIndicator") or to_risk_indicator(governance_score),
         "gaps": gaps,
-        "minutes": model_output.get("minutes") if isinstance(model_output.get("minutes"), dict) else build_minutes(transcript, evidence_pool),
-        "insights": model_output.get("insights") if isinstance(model_output.get("insights"), list) else build_insights(transcript, evidence_pool),
-        "engagement": model_output.get("engagement") if isinstance(model_output.get("engagement"), dict) else build_engagement(transcript),
+        "minutes": normalise_minutes_output(model_output.get("minutes"), transcript, evidence_pool),
+        "insights": normalise_insights_output(model_output.get("insights"), transcript, evidence_pool),
+        "engagement": normalise_engagement_output(model_output.get("engagement"), transcript),
         "evidencePool": evidence_pool,
         "weights": WEIGHTS,
         "completedAt": _now_iso(),
     }
+    return ensure_minimum_analysis(results, transcript)
 
 
 async def run_governance_analysis(assessment_id: str, meeting_name: str, files: list[dict]) -> dict[str, Any]:

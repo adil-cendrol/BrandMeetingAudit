@@ -50,6 +50,15 @@ function CategoryBar({ label, value, maxValue = 100 }) {
     );
 }
 
+function EmptyStateCard({ title, description }) {
+    return (
+        <div className="card" style={{ textAlign: 'center', padding: '48px 24px' }}>
+            <div className="card-title" style={{ marginBottom: '8px' }}>{title}</div>
+            <div className="text-sm text-muted">{description}</div>
+        </div>
+    );
+}
+
 // ── Export Modal ──────────────────────────────────────────────────────
 function ExportModal({ onClose, meetingName, assessmentId }) {
     const [sections, setSections] = useState({
@@ -191,6 +200,9 @@ export default function Results() {
     const { results } = assessment;
     const riskColor = results.riskIndicator.level === 'green' ? '#10b981' : results.riskIndicator.level === 'amber' ? '#f59e0b' : '#ef4444';
     const evidencePool = results.evidencePool;
+    const insightCategories = Array.isArray(results.insights) ? results.insights : [];
+    const engagementRadarData = Array.isArray(results.engagement?.radarData) ? results.engagement.radarData : [];
+    const engagementSignals = Array.isArray(results.engagement?.signals) ? results.engagement.signals : [];
 
     const TABS = ['overview', 'minutes', 'insights', 'engagement', 'risks'];
 
@@ -308,8 +320,8 @@ export default function Results() {
                                 <div className="card-title mb-4">⚡ Quick Navigation</div>
                                 {[
                                     { tab: 'minutes', label: '📝 View Generated Minutes', desc: `${results.minutes.keyDecisions.length} decisions, ${results.minutes.actionItems.length} action items` },
-                                    { tab: 'insights', label: '💡 Key Governance Insights', desc: `${results.insights.reduce((s, c) => s + c.insights.length, 0)} insights across 3 categories` },
-                                    { tab: 'engagement', label: '📊 Engagement Analysis', desc: `${results.engagement.signals.length} signals detected` },
+                                    { tab: 'insights', label: '💡 Key Governance Insights', desc: `${insightCategories.reduce((s, c) => s + (Array.isArray(c.insights) ? c.insights.length : 0), 0)} insights across 3 categories` },
+                                    { tab: 'engagement', label: '📊 Engagement Analysis', desc: `${engagementSignals.length} signals detected` },
                                     { tab: 'risks', label: '🚩 Risk Flags', desc: `${results.gaps.length} governance flags raised` },
                                 ].map(item => (
                                     <div
@@ -424,7 +436,13 @@ export default function Results() {
                 {/* ── Insights Tab ── */}
                 {activeTab === 'insights' && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                        {results.insights.map(cat => (
+                        {insightCategories.length === 0 && (
+                            <EmptyStateCard
+                                title="No insights generated"
+                                description="The analysis returned an empty insights payload for this meeting."
+                            />
+                        )}
+                        {insightCategories.map(cat => (
                             <div key={cat.category} className="card">
                                 <div className="card-header">
                                     <div>
@@ -476,18 +494,25 @@ export default function Results() {
                                 <div className="card-subtitle">Board participation quality metrics</div>
                             </div>
                             <div className="radar-container">
-                                <ResponsiveContainer width="100%" height={280}>
-                                    <RadarChart data={results.engagement.radarData}>
-                                        <PolarGrid stroke="rgba(255,255,255,0.08)" />
-                                        <PolarAngleAxis dataKey="axis" tick={{ fill: '#94a3b8', fontSize: 11 }} />
-                                        <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
-                                        <Radar name="Score" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} strokeWidth={2} />
-                                        <Tooltip
-                                            contentStyle={{ background: 'var(--navy-900)', border: '1px solid var(--border-medium)', borderRadius: '8px', fontSize: '12px' }}
-                                            formatter={(v) => [`${v}`, 'Score']}
-                                        />
-                                    </RadarChart>
-                                </ResponsiveContainer>
+                                {engagementRadarData.length === 0 ? (
+                                    <EmptyStateCard
+                                        title="No radar data"
+                                        description="The engagement section returned an empty JSON object, so there is nothing to plot yet."
+                                    />
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={280}>
+                                        <RadarChart data={engagementRadarData}>
+                                            <PolarGrid stroke="rgba(255,255,255,0.08)" />
+                                            <PolarAngleAxis dataKey="axis" tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                                            <PolarRadiusAxis angle={30} domain={[0, 100]} tick={false} axisLine={false} />
+                                            <Radar name="Score" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} strokeWidth={2} />
+                                            <Tooltip
+                                                contentStyle={{ background: 'var(--navy-900)', border: '1px solid var(--border-medium)', borderRadius: '8px', fontSize: '12px' }}
+                                                formatter={(v) => [`${v}`, 'Score']}
+                                            />
+                                        </RadarChart>
+                                    </ResponsiveContainer>
+                                )}
                             </div>
                         </div>
 
@@ -496,7 +521,10 @@ export default function Results() {
                                 <div className="card-title">📡 Engagement Signals</div>
                                 <div className="card-subtitle">Board behaviour patterns detected</div>
                             </div>
-                            {results.engagement.signals.map(s => (
+                            {engagementSignals.length === 0 && (
+                                <div className="text-sm text-muted">No engagement signals were generated.</div>
+                            )}
+                            {engagementSignals.map(s => (
                                 <div key={s.id} className="risk-flag" style={
                                     s.severity === 'positive' ? { borderLeftColor: 'var(--emerald-400)', background: 'rgba(16,185,129,0.05)', borderColor: 'rgba(16,185,129,0.15)' } :
                                         s.severity === 'critical' ? {} : { borderLeftColor: 'var(--amber-400)', borderColor: 'rgba(245,158,11,0.15)', background: 'rgba(245,158,11,0.05)' }
